@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "functions": {
+    "api/detect.js": {
+      "maxDuration": 10
+    }
+  }
+}
