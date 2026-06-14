@@ -1,12 +1,12 @@
 import { GoogleGenAI } from '@google/genai';
 
-// A global in-memory variable to act as our temporary database state. 
-// Note: In serverless, this resets when the function goes to sleep, 
-// which is perfect for a live-updating miniature city flag!
-global.emergencyState = global.emergencyState || { isEmergency: false, vehicleType: 'none' };
+// Safe initialization of global state
+if (!global.emergencyState) {
+  global.emergencyState = { isEmergency: false, vehicleType: 'none' };
+}
 
 export default async function handler(req, res) {
-  // Allow your ESP32-CAM to hit this endpoint from anywhere
+  // Setup CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -15,16 +15,26 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // --- ENDPOINT 1: THE ESP32-CAM SENDS THE IMAGE (POST) ---
+  // --- GET METHOD: TRAFFIC LIGHTS POLL STATUS ---
+  if (req.method === 'GET') {
+    return res.status(200).json(global.emergencyState);
+  }
+
+  // --- POST METHOD: ESP32-CAM SENDS IMAGE ---
   if (req.method === 'POST') {
     try {
-      const { imageBase64 } = req.body; // Expecting raw base64 string from ESP32
-
-      if (!imageBase64) {
-        return res.status(400).json({ error: 'No image data received.' });
+      // Check for API key right away before running heavy code
+      if (!process.env.GEMINI_API_KEY) {
+        console.error("Missing GEMINI_API_KEY environment variable.");
+        return res.status(500).json({ error: "Server Configuration Error: Missing API Key" });
       }
 
-      // Initialize Gemini with your environment variable API key
+      const { imageBase64 } = req.body || {};
+
+      if (!imageBase64) {
+        return res.status(400).json({ error: 'No image data received in request body.' });
+      }
+
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
       const prompt = `
@@ -36,7 +46,6 @@ export default async function handler(req, res) {
         }
       `;
 
-      // Call Gemini 3.5 Flash (optimized for speed and low cost)
       const response = await ai.models.generateContent({
         model: 'gemini-3.5-flash',
         contents: [
@@ -48,28 +57,23 @@ export default async function handler(req, res) {
             }
           }
         ],
-        // Force the AI to output parseable JSON
         config: { responseMimeType: "application/json" }
       });
 
-      // Parse the AI response and update our global city state
       const result = JSON.parse(response.text);
+      
+      // Update state safely
       global.emergencyState = {
-        isEmergency: result.isEmergency,
-        vehicleType: result.vehicleType
+        isEmergency: !!result.isEmergency,
+        vehicleType: result.vehicleType || 'none'
       };
 
       return res.status(200).json({ message: "Processed successfully", status: global.emergencyState });
 
     } catch (error) {
-      console.error("Gemini Error:", error);
-      return res.status(500).json({ error: "Failed to process image." });
+      console.error("Runtime Exception:", error);
+      return res.status(500).json({ error: "Internal processing crash", details: error.message });
     }
-  }
-
-  // --- ENDPOINT 2: YOUR TRAFFIC LIGHTS CHECK THE STATUS (GET) ---
-  if (req.method === 'GET') {
-    return res.status(200).json(global.emergencyState);
   }
 
   return res.status(405).json({ error: 'Method not allowed' });
