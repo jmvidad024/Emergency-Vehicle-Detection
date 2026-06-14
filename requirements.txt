@@ -1,4 +1,4 @@
-Flask==3.0.3
+flask==3.0.3
 requests==2.32.3
 transformers==4.48.0
 torch>=2.9.0
