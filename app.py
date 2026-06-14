@@ -1,90 +1,77 @@
 import base64
-import io
 import os
-import threading
-import time
 from flask import Flask, request, jsonify
-from google import genai
-from google.genai import types
-from PIL import Image
-from pydantic import BaseModel
+import requests
 
 app = Flask(__name__)
 
-# Initialize the Gemini Client using the server environment variable
-# The SDK automatically checks for GEMINI_API_KEY in your system environment variables
-client = genai.Client()
+# Fallback memory variable to store the latest evaluation of the intersection
+intersection_status = "none"
 
-# Define the structured data schema for Gemini 2.5 Flash
-class TrafficAnalysis(BaseModel):
-    isEmergency: bool
-    vehicleType: str
-
-# Shared continuous global application state
-emergency_state = {
-    "isEmergency": False,
-    "vehicleType": "none"
-}
-
-def auto_reset_state():
-    """Clears out the emergency status after 10 seconds."""
-    global emergency_state
-    time.sleep(10)
-    emergency_state = {"isEmergency": False, "vehicleType": "none"}
-    print("System Clear: Resetting traffic system back to normal state.")
+# Fetch the secret token we just saved in Render's dashboard environment
+ROBOFLOW_API_KEY = os.environ.get("ROBOFLOW_API_KEY")
 
 @app.route('/api/detect', methods=['POST'])
 def detect_vehicle():
-    global emergency_state
+    global intersection_status
     try:
+        # 1. Catch the image data payload sent over by the ESP32-CAM
         data = request.get_json()
         if not data or 'imageBase64' not in data:
-            return jsonify({"error": "Missing image string payload"}), 400
+            return jsonify({"error": "Missing image data"}), 400
+
+        raw_base64 = data['imageBase64']
+
+        if not ROBOFLOW_API_KEY:
+            return jsonify({"error": "Roboflow API key is not configured on Render"}), 500
+
+        # 2. Target the free, pre-trained COCO object detection model hosted by Roboflow
+        # Project ID: "coco", Version ID: "3"
+        url = f"https://detect.roboflow.com/coco/3"
+        params = {"api_key": ROBOFLOW_API_KEY}
         
-        # Extract and decode image buffer stream
-        image_bytes = base64.b64decode(data['imageBase64'])
-        image = Image.open(io.BytesIO(image_bytes))
-        
-        prompt = (
-            "Analyze this traffic intersection image. Check if there is an active, "
-            "approaching emergency vehicle (like an ambulance, fire truck, or police car). "
-            "Output matching the required JSON schema."
+        # 3. Post the raw image data directly to Roboflow's cloud servers
+        response = requests.post(
+            url, 
+            params=params,
+            data=raw_base64, 
+            headers={"Content-Type": "application/x-www-form-urlencoded"}
         )
         
-        # Run vision processing via the Gemini 2.5 Flash model
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[image, prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=TrafficAnalysis,
-                temperature=0.1
-            ),
-        )
+        # 4. Handle response errors from Roboflow gracefully
+        if response.status_code != 200:
+            print(f"⚠️ Roboflow returned an error: {response.text}")
+            return jsonify({"error": "Failed to communicate with Vision API"}), 500
+
+        predictions = response.json().get('predictions', [])
         
-        import json
-        result = json.loads(response.text)
-        
-        emergency_state = {
-            "isEmergency": bool(result.get("isEmergency", False)),
-            "vehicleType": str(result.get("vehicleType", "none")).lower()
-        }
-        
-        # Trigger background automatic clearance timer
-        if emergency_state["isEmergency"]:
-            threading.Thread(target=auto_reset_state, daemon=True).start()
-            
-        return jsonify({"message": "Processed successfully", "status": emergency_state}), 200
-        
+        # Extract just the string labels of objects found (e.g., ['car', 'truck'])
+        detected_labels = [p['class'].lower() for p in predictions]
+        print(f"☁️ Roboflow Cloud Vision identified: {detected_labels}")
+
+        # 5. Core Traffic Rules: Look for your priority vehicles!
+        # For a miniature project, a 'truck' or 'bus' represents an emergency vehicle.
+        if "truck" in detected_labels or "bus" in detected_labels:
+            intersection_status = "ambulance"
+            print("🚨 Emergency vehicle declared! Changing status memory.")
+        else:
+            intersection_status = "none"
+
+        return jsonify({"status": "processed", "objects_found": detected_labels}), 200
+
     except Exception as e:
+        print(f"❌ Server Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/detect', methods=['GET'])
+
+@app.route('/api/status', methods=['GET'])
 def get_status():
-    """Polled continuously by the Arduino Uno to read current intersection state."""
-    return jsonify(emergency_state), 200
+    global intersection_status
+    # This is the lightweight endpoint your hardware devices hit to check state
+    return jsonify({"vehicleType": intersection_status})
+
 
 if __name__ == '__main__':
-    # Grab the dynamic port given by the cloud provider, default to 5000
-    port = int(os.environ.get("PORT", 5000))
+    # Render binds automatically to port 10000 by default
+    port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
