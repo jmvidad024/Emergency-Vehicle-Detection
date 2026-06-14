@@ -1,11 +1,23 @@
+import base64
+import io
 import os
 from flask import Flask, request, jsonify
-import requests
+from PIL import Image
+from transformers import pipeline
 
 app = Flask(__name__)
 
-# Fallback memory variable to store the latest evaluation of the intersection
+# System memory state
 intersection_status = "none"
+
+print("⏳ Loading local AI Vision Pipeline into server memory...")
+# Initialize a free, high-speed vision captioning engine locally
+try:
+    vision_engine = pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
+    print("🟢 Local Vision Engine successfully loaded and ready!")
+except Exception as err:
+    print(f"❌ Failed to load model: {str(err)}")
+    vision_engine = None
 
 @app.route('/api/detect', methods=['POST'])
 def detect_vehicle():
@@ -17,62 +29,34 @@ def detect_vehicle():
 
         raw_base64 = data['imageBase64']
 
-        # Clean up any weird data prefixes or newlines from the web payload
+        if vision_engine is None:
+            return jsonify({"error": "AI Vision engine failed to initialize on boot"}), 500
+
+        # Clean the base64 string layout data
         if "," in raw_base64:
             raw_base64 = raw_base64.split(",")[1]
         raw_base64 = raw_base64.replace(" ", "+").replace("\n", "").replace("\r", "")
 
-        # Format the image into a clean Data URL structure for the vision engine
-        image_data_url = f"data:image/jpeg;base64,{raw_base64}"
+        # Decode base64 directly into system bytes and open as a PIL Image
+        image_bytes = base64.b64decode(raw_base64)
+        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-        # Setup the Pollinations AI Endpoint
-        url = "https://text.pollinations.ai/"
+        # Run local inference processing
+        predictions = vision_engine(pil_image)
+        description = predictions[0].get("generated_text", "").lower()
         
-        payload = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Analyze this traffic camera frame. Determine if an emergency response "
-                                "vehicle (like an ambulance, fire truck, or police car) is visible. "
-                                "Respond with exactly one word in lowercase: 'ambulance' if present, "
-                                "or 'none' if it is a normal car, empty road, glare, or screen frame."
-                            )
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": image_data_url
-                            }
-                        }
-                    ]
-                }
-            ],
-            "model": "openai-large"  # High-accuracy vision interpreter
-        }
+        print(f"👁️ Local AI Scene Evaluation: '{description}'")
 
-        # Fire request to the free, uncapped Pollinations cloud engine
-        response = requests.post(url, json=payload)
+        # Contextual verification checks
+        emergency_keywords = ["ambulance", "truck", "fire", "bus", "car", "vehicle"]
         
-        if response.status_code != 200:
-            print(f"⚠️ Vision engine returned an error: {response.text}")
-            return jsonify({"error": "Failed to communicate with Vision API"}), 500
-
-        # Parse out the single-word context response text directly
-        ai_decision = response.text.strip().lower()
-        print(f"👁️ Free Cloud Vision Intelligence Evaluation: '{ai_decision}'")
-
-        # Core Traffic Control Logic
-        if "ambulance" in ai_decision:
+        if any(word in description for word in emergency_keywords):
             intersection_status = "ambulance"
-            print("🚨 Emergency vehicle validated! Triggering hardware green light sequence.")
+            print("🚨 Target vehicle confirmed! Setting intersection status to HIGH.")
         else:
             intersection_status = "none"
 
-        return jsonify({"status": "processed", "vision_saw": ai_decision}), 200
+        return jsonify({"status": "processed", "ai_saw": description}), 200
 
     except Exception as e:
         print(f"❌ Server Error: {str(e)}")

@@ -3,3 +3,8 @@ google-genai
 pillow
 pydantic
 gunicorn
+Flask==3.0.0
+requests==2.31.0
+transformers==4.38.0
+torch==2.2.0
+pillow==10.2.0
