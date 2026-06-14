@@ -15,22 +15,23 @@ ROBOFLOW_API_KEY = os.environ.get("ROBOFLOW_API_KEY")
 def detect_vehicle():
     global intersection_status
     try:
-        # 1. Catch the image data payload sent over by the ESP32-CAM
+        # 1. Catch the JSON payload from the ESP32-CAM
         data = request.get_json()
         if not data or 'imageBase64' not in data:
             return jsonify({"error": "Missing image data"}), 400
 
+        # Extract just the raw base64 text from the JSON object
         raw_base64 = data['imageBase64']
 
         if not ROBOFLOW_API_KEY:
             return jsonify({"error": "Roboflow API key is not configured on Render"}), 500
 
-        # 2. Target the free, pre-trained COCO object detection model hosted by Roboflow
-        # Project ID: "coco", Version ID: "3"
-        url = f"https://detect.roboflow.com/coco/3"
+        # 2. Set up the Roboflow endpoint URL
+        url = "https://detect.roboflow.com/coco/3"
         params = {"api_key": ROBOFLOW_API_KEY}
         
-        # 3. Post the raw image data directly to Roboflow's cloud servers
+        # 3. Post the raw string data to Roboflow
+        # We pass the raw string directly into the data parameter
         response = requests.post(
             url, 
             params=params,
@@ -44,13 +45,10 @@ def detect_vehicle():
             return jsonify({"error": "Failed to communicate with Vision API"}), 500
 
         predictions = response.json().get('predictions', [])
-        
-        # Extract just the string labels of objects found (e.g., ['car', 'truck'])
         detected_labels = [p['class'].lower() for p in predictions]
         print(f"☁️ Roboflow Cloud Vision identified: {detected_labels}")
 
-        # 5. Core Traffic Rules: Look for your priority vehicles!
-        # For a miniature project, a 'truck' or 'bus' represents an emergency vehicle.
+        # 5. Core Traffic Rules: Look for priority vehicles
         if "truck" in detected_labels or "bus" in detected_labels:
             intersection_status = "ambulance"
             print("🚨 Emergency vehicle declared! Changing status memory.")
@@ -62,7 +60,6 @@ def detect_vehicle():
     except Exception as e:
         print(f"❌ Server Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
