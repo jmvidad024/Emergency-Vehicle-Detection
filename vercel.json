@@ -1,9 +1,0 @@
-{
-  "version": 2,
-  "functions": {
-    "api/detect.js": {
-      "maxDuration": 10,
-      "includeFiles": "node_modules/@google/genai/**"
-    }
-  }
-}
