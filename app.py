@@ -7,9 +7,6 @@ app = Flask(__name__)
 # Fallback memory variable to store the latest evaluation of the intersection
 intersection_status = "none"
 
-# Fetch the Groq API key from Render's dashboard environment
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-
 @app.route('/api/detect', methods=['POST'])
 def detect_vehicle():
     global intersection_status
@@ -20,26 +17,18 @@ def detect_vehicle():
 
         raw_base64 = data['imageBase64']
 
-        if not GROQ_API_KEY:
-            return jsonify({"error": "Groq API key is not configured on Render"}), 500
-
         # Clean up any weird data prefixes or newlines from the web payload
         if "," in raw_base64:
             raw_base64 = raw_base64.split(",")[1]
         raw_base64 = raw_base64.replace(" ", "+").replace("\n", "").replace("\r", "")
 
-        # Format the image into a clean Data URL structure for Llama Vision
+        # Format the image into a clean Data URL structure for the vision engine
         image_data_url = f"data:image/jpeg;base64,{raw_base64}"
 
-        # Configure Groq API endpoint headers and body payload
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        }
+        # Setup the Pollinations AI Endpoint
+        url = "https://text.pollinations.ai/"
         
         payload = {
-            "model": "llama-3.2-11b-vision-instruct",
             "messages": [
                 {
                     "role": "user",
@@ -62,29 +51,28 @@ def detect_vehicle():
                     ]
                 }
             ],
-            "temperature": 0.1,
-            "max_tokens": 5
+            "model": "openai-large"  # High-accuracy vision interpreter
         }
 
-        # Fire request to Groq's ultra-fast cloud engine
-        response = requests.post(url, headers=headers, json=payload)
+        # Fire request to the free, uncapped Pollinations cloud engine
+        response = requests.post(url, json=payload)
         
         if response.status_code != 200:
-            print(f"⚠️ Groq Vision returned an error: {response.text}")
-            return jsonify({"error": "Failed to communicate with Groq Vision API"}), 500
+            print(f"⚠️ Vision engine returned an error: {response.text}")
+            return jsonify({"error": "Failed to communicate with Vision API"}), 500
 
-        # Parse out the single-word content response text
-        ai_decision = response.json()['choices'][0]['message']['content'].strip().lower()
-        print(f"👁️ Groq Vision Intelligence Evaluation: '{ai_decision}'")
+        # Parse out the single-word context response text directly
+        ai_decision = response.text.strip().lower()
+        print(f"👁️ Free Cloud Vision Intelligence Evaluation: '{ai_decision}'")
 
         # Core Traffic Control Logic
         if "ambulance" in ai_decision:
             intersection_status = "ambulance"
-            print("🚨 Emergency vehicle validated! Triggering sequence.")
+            print("🚨 Emergency vehicle validated! Triggering hardware green light sequence.")
         else:
             intersection_status = "none"
 
-        return jsonify({"status": "processed", "groq_saw": ai_decision}), 200
+        return jsonify({"status": "processed", "vision_saw": ai_decision}), 200
 
     except Exception as e:
         print(f"❌ Server Error: {str(e)}")
