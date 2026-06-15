@@ -1,74 +1,76 @@
+from flask import Flask, request, jsonify
+from ultralytics import YOLO
+from PIL import Image
 import base64
 import io
-import os
-from flask import Flask, request, jsonify
-from PIL import Image
-from transformers import pipeline
 
 app = Flask(__name__)
 
-# System memory state
-intersection_status = "none"
+print("Loading YOLO model...")
+model = YOLO("best.pt")
+print("YOLO loaded!")
 
-print("⏳ Loading local AI Vision Pipeline into server memory...")
-# Initialize a free, high-speed vision captioning engine locally
-try:
-    vision_engine = pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
-    print("🟢 Local Vision Engine successfully loaded and ready!")
-except Exception as err:
-    print(f"❌ Failed to load model: {str(err)}")
-    vision_engine = None
+intersection_status = "none"
 
 @app.route('/api/detect', methods=['POST'])
 def detect_vehicle():
     global intersection_status
+
     try:
         data = request.get_json()
-        if not data or 'imageBase64' not in data:
-            return jsonify({"error": "Missing image data"}), 400
 
-        raw_base64 = data['imageBase64']
+        if 'imageBase64' not in data:
+            return jsonify({"error": "No image"}), 400
 
-        if vision_engine is None:
-            return jsonify({"error": "AI Vision engine failed to initialize on boot"}), 500
+        img_data = base64.b64decode(data['imageBase64'])
 
-        # Clean the base64 string layout data
-        if "," in raw_base64:
-            raw_base64 = raw_base64.split(",")[1]
-        raw_base64 = raw_base64.replace(" ", "+").replace("\n", "").replace("\r", "")
+        image = Image.open(io.BytesIO(img_data)).convert("RGB")
 
-        # Decode base64 directly into system bytes and open as a PIL Image
-        image_bytes = base64.b64decode(raw_base64)
-        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        results = model.predict(
+            source=image,
+            conf=0.25,
+            verbose=False
+        )
 
-        # Run local inference processing
-        predictions = vision_engine(pil_image)
-        description = predictions[0].get("generated_text", "").lower()
-        
-        print(f"👁️ Local AI Scene Evaluation: '{description}'")
+        vehicle_type = "none"
 
-        # Contextual verification checks
-        emergency_keywords = ["ambulance", "truck", "fire", "bus", "car", "vehicle"]
-        
-        if any(word in description for word in emergency_keywords):
-            intersection_status = "ambulance"
-            print("🚨 Target vehicle confirmed! Setting intersection status to HIGH.")
-        else:
-            intersection_status = "none"
+        if len(results[0].boxes) > 0:
 
-        return jsonify({"status": "processed", "ai_saw": description}), 200
+            best_conf = 0
+
+            for box in results[0].boxes:
+
+                conf = float(box.conf[0])
+                cls = int(box.cls[0])
+
+                if conf > best_conf:
+                    best_conf = conf
+                    vehicle_type = model.names[cls]
+
+        intersection_status = vehicle_type
+
+        print(f"Detected: {vehicle_type}")
+
+        return jsonify({
+            "vehicleType": vehicle_type
+        })
 
     except Exception as e:
-        print(f"❌ Server Error: {str(e)}")
+        print(e)
         return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
     global intersection_status
-    return jsonify({"vehicleType": intersection_status})
+
+    return jsonify({
+        "vehicleType": intersection_status
+    })
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(
+        host='0.0.0.0',
+        port=5000
+    )
